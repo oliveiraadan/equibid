@@ -116,3 +116,22 @@ class ZApiProvider:
     def check_phone_exists(self, phone: str) -> Dict[str, Any]:
         """Verifica se um número de telefone possui uma conta no WhatsApp."""
         return self._make_request("GET", f"phone-exists/{phone}")
+
+    def send_button_list(self, phone: str, button_payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Envia uma mensagem com uma lista de botões de resposta.
+
+        Args:
+            button_payload (Dict): Dicionário contendo a 'message' e a lista de 'buttons'.
+                                 Ex: {"message": "...", "buttons": [{"id":"1", "label":"Sim"}]}
+        """
+        payload = {
+            "phone": phone,
+            "message": button_payload.get("message"),
+            "buttonList": {
+                "buttons": button_payload.get("buttons", [])
+            }
+        }
+        api_response = self._make_request(
+            "POST", "send-button-list", json=payload)
+        return self._format_response(api_response)

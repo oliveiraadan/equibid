@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  webhook:
+    build: .
+    # O comando para iniciar o servidor de webhook
+    command: python webhook.py
+    ports:
+      # Expõe a porta 8000 para o ngrok
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+
+  worker:
+    build: .
+    # O comando para iniciar o processo do worker
+    command: python worker.py
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    # Reinicia o worker se ele falhar
+    restart: on-failure
