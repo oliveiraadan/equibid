@@ -7,7 +7,7 @@ services:
     command: python webhook.py
     ports:
       # Expõe a porta 8000 para o ngrok
-      - "8000:8000"
+      - "8010:8010"
     env_file:
       - .env
     volumes:

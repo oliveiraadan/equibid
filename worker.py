@@ -1,76 +1,94 @@
 import json
 from time import sleep
-# Altere o import para o novo provider
+from dotenv import load_dotenv
 from providers.telegram import TelegramProvider
-from typing import List, Dict
 import os
 
-# Instancia o provider do Telegram
+# Carrega as variáveis de ambiente do arquivo .env
+load_dotenv()
+
+# --- Simulação de Banco de Dados ---
+# Em um cenário real, esta função faria uma query no seu banco de dados.
+
+
+def buscar_notificacao_pendente_do_db():
+    """Simula a busca por uma notificação pendente no banco de dados."""
+    print("\nWORKER: Buscando notificações pendentes no banco de dados...")
+    # Retorna um dicionário com os dados necessários para a notificação
+    return {
+        "correlation_id": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+        "user_name": "Daniel",
+        "user_telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID"),
+        "saved_search_details": "Cavalo Quarto de Milha, Fêmea, até 3 anos",
+        "found_lot": {
+            "id": 12345,
+            "nome": "Lote 25 - Potra Quarto de Milha Pura",
+            "leilao": "Leilão Virtual Haras Primavera",
+            "leiloeira": "Agro Leilões",
+            "data_nascimento": "2023-01-15",
+            "raca": "Quarto de Milha",
+            "sexo": "Fêmea",
+            "pai": "Campeão Mr. King",
+            "mae": "Dama da Primavera",
+            "url": "https://www.equibid.com.br/lotes/12345"
+        }
+    }
+
+
+# --- Lógica do Worker ---
 try:
-    telegram_provider = TelegramProvider()
-    # Pega o CHAT_ID do .env para onde as mensagens serão enviadas
-    TARGET_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+    telegram = TelegramProvider()
 except RuntimeError as e:
     print(f"ERRO CRÍTICO: {e}")
-    telegram_provider = None
-    TARGET_CHAT_ID = None
+    telegram = None
 
 
-def enviar_notificacao_telegram(
-    nome_usuario: str,
-    nome_lote: str
-):
-    """
-    Usa o TelegramProvider para enviar a notificação.
-    """
-    if not telegram_provider or not TARGET_CHAT_ID:
-        print("Worker não pode enviar: Telegram Provider ou CHAT_ID não está disponível.")
+def enviar_pergunta_inicial(notificacao):
+    """Envia a primeira mensagem do fluxo: a pergunta de interesse."""
+    if not telegram:
+        print("Worker não pode enviar: Provider não está disponível.")
         return
 
-    print(
-        f"\nWORKER: Buscando notificação para {nome_usuario} sobre o lote {nome_lote}")
+    # Mensagem informando sobre o match e perguntando o interesse
+    mensagem = (
+        f"Olá, *{notificacao['user_name']}*! 👋\n\n"
+        f"Encontramos um resultado para sua busca salva: *'{notificacao['saved_search_details']}'*.\n\n"
+        "Deseja ver os detalhes do lote encontrado?"
+    )
 
-    # Mensagem formatada para o Telegram (usando Markdown)
-    mensagem = f"👋 Olá, *{nome_usuario}*!\n\nEncontramos um lote que pode te interessar:\n🐴 _{nome_lote}_\n\nDeseja receber mais detalhes?"
-
-    # Botões para o Telegram (formato de 'inline_keyboard')
+    # Botões de Sim/Não. O `callback_data` é crucial para o webhook saber o que fazer.
     botoes = [
-        {"text": "Sim, por favor", "callback_data": "yes_details"},
-        {"text": "Não, obrigado", "callback_data": "no_details"}
+        {"text": "✅ Sim, ver detalhes",
+            "callback_data": f"show_details:{notificacao['correlation_id']}"},
+        {"text": "❌ Não, obrigado",
+            "callback_data": f"no_thanks:{notificacao['correlation_id']}"}
     ]
 
     try:
-        print("WORKER: Enviando pergunta de confirmação via Telegram...")
-        # A API do Telegram lida com botões de resposta e de link de forma diferente.
-        # Para "Sim/Não", usamos 'callback_data'. O webhook lidaria com isso.
-        # Para testes, podemos usar botões de link.
-        botoes_de_link = [
-            {"text": "Ver Lote (Exemplo)",
-             "url": "https://equibid.com.br/lote/exemplo"},
-            {"text": "Ver Buscas (Exemplo)",
-             "url": "https://equibid.com.br/buscas/exemplo"}
-        ]
-
-        resultado = telegram_provider.send_message(
-            chat_id=TARGET_CHAT_ID,
+        print(
+            f"WORKER: Enviando pergunta inicial para o chat ID {notificacao['user_telegram_chat_id']}...")
+        resultado = telegram.send_message(
+            chat_id=notificacao['user_telegram_chat_id'],
             text=mensagem,
-            buttons=botoes_de_link
+            buttons=botoes
         )
-        print("WORKER: Pergunta enviada. Resposta da API:",
-              json.dumps(resultado, indent=2))
+        # TODO: Salvar o `message_id` retornado pela API no banco de dados,
+        # junto com o `correlation_id`, para ter um rastreamento completo.
+        print("WORKER: Pergunta inicial enviada com sucesso.")
     except RuntimeError as e:
         print(f"WORKER: Falha ao enviar notificação: {e}")
 
 
 def main():
     """Função principal do worker."""
-    print("WORKER: Iniciado e pronto para processar notificações via TELEGRAM.")
+    print("WORKER: Iniciado e pronto para processar notificações.")
     while True:
-        print("WORKER: Simulando o envio de uma notificação pendente...")
-        enviar_notificacao_telegram(
-            nome_usuario="Daniel (via Telegram)",
-            nome_lote="Lote 25 - Cavalo Campeão de Marcha"
-        )
+        notificacao = buscar_notificacao_pendente_do_db()
+        if notificacao:
+            enviar_pergunta_inicial(notificacao)
+            # TODO: Marcar a notificação como 'sent' no banco para não ser enviada de novo.
+        else:
+            print("WORKER: Nenhuma notificação pendente encontrada.")
 
         print("WORKER: Ciclo finalizado. Aguardando 60 segundos.")
         sleep(60)

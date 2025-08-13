@@ -1,19 +1,23 @@
 import os
 import requests
 from typing import Any, Dict, List, Optional
+import json
+
 
 class TelegramProvider:
     """
     Provider para encapsular todas as interações com a API do Telegram Bot.
     """
+
     def __init__(self):
         """
         Inicializa o provider, carregando o token do ambiente.
         """
         self.token = os.getenv('TELEGRAM_BOT_TOKEN')
         if not self.token:
-            raise RuntimeError("Telegram não configurado. Verifique a variável de ambiente: TELEGRAM_BOT_TOKEN.")
-        
+            raise RuntimeError(
+                "Telegram não configurado. Verifique a variável de ambiente: TELEGRAM_BOT_TOKEN.")
+
         self.base_url = f"https://api.telegram.org/bot{self.token}"
         print("✅ TelegramProvider inicializado com sucesso.")
 
@@ -25,7 +29,8 @@ class TelegramProvider:
             response.raise_for_status()
             return response.json()
         except requests.exceptions.HTTPError as err:
-            raise RuntimeError(f"Telegram API Error: {err.response.status_code} - {err.response.text}")
+            raise RuntimeError(
+                f"Telegram API Error: {err.response.status_code} - {err.response.text}")
         except requests.exceptions.RequestException as err:
             raise RuntimeError(f"Telegram Request Error: {err}")
 
@@ -42,12 +47,13 @@ class TelegramProvider:
         payload = {
             "chat_id": chat_id,
             "text": text,
-            "parse_mode": "Markdown" # Permite usar negrito, itálico, etc.
+            "parse_mode": "Markdown"  # Permite usar negrito, itálico, etc.
         }
 
         if buttons:
             # A API do Telegram espera um array de arrays para o teclado
             inline_keyboard = [[btn for btn in buttons]]
-            payload["reply_markup"] = json.dumps({"inline_keyboard": inline_keyboard})
+            payload["reply_markup"] = json.dumps(
+                {"inline_keyboard": inline_keyboard})
 
         return self._make_request("POST", "sendMessage", json=payload)
