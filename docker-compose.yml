@@ -6,12 +6,16 @@ services:
     # O comando para iniciar o servidor de webhook
     command: python webhook.py
     ports:
-      # Expõe a porta 8000 para o ngrok
+      # Expõe a porta 8010 para o ngrok
       - "8010:8010"
     env_file:
       - .env
     volumes:
       - .:/app
+    # Conecta este serviço à rede padrão e à rede externa do Supabase
+    networks:
+      - default
+      - supabase_net
 
   worker:
     build: .
@@ -23,3 +27,17 @@ services:
       - .:/app
     # Reinicia o worker se ele falhar
     restart: on-failure
+    # Conecta este serviço à rede padrão e à rede externa do Supabase
+    networks:
+      - default
+      - supabase_net
+
+# Declara as redes que serão usadas
+networks:
+  # A rede padrão para comunicação interna entre worker e webhook, se necessário
+  default:
+  # Define a conexão com a rede externa já existente do Supabase
+  supabase_net:
+    external: true
+    # IMPORTANTE: Substitua o nome abaixo pelo nome real da sua rede Supabase
+    name: 'supabase_default'
