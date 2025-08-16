@@ -67,6 +67,41 @@ def buscar_dados_completos_por_correlation_id(correlation_id: str):
     # Renomeia as chaves para corresponder ao formato esperado pela lógica de mensagem
     return {"found_lot": dict(data)}
 
+# Adicione esta nova função em webhook.py
+
+
+def registrar_resposta_do_usuario(correlation_id: str, acao: str):
+    """
+    Atualiza a tabela notifications_queue com a resposta do usuário.
+    """
+    print(
+        f"WEBHOOK: Registrando ação '{acao}' para o correlation_id: {correlation_id}")
+    conn = get_db_connection()
+    if not conn:
+        print("WEBHOOK: ERRO - Não foi possível conectar ao DB para registrar a resposta.")
+        return
+
+    query = """
+        UPDATE public.notifications_queue
+        SET
+            responded = TRUE,
+            response_value = %s,
+            response_at = NOW()
+        WHERE correlation_id = %s;
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query, (acao, correlation_id))
+        conn.commit()
+        print("WEBHOOK: Resposta registrada com sucesso no banco de dados.")
+    except (Exception, psycopg2.Error) as error:
+        print(f"WEBHOOK: ERRO ao registrar resposta no DB: {error}")
+        if conn:
+            conn.rollback()
+    finally:
+        if conn:
+            conn.close()
+
 
 # --- Lógica do Webhook ---
 app = FastAPI(title="EquiBid Webhook")
@@ -99,6 +134,8 @@ async def processar_webhook(request: Request):
         acao, correlation_id = callback_data.split(":", 1)
     except ValueError:
         return {"status": "error", "message": "Formato de callback_data inválido."}
+
+    registrar_resposta_do_usuario(correlation_id=correlation_id, acao=acao)
 
     # Busca os dados completos DO LOTE usando o correlation_id
     notificacao = buscar_dados_completos_por_correlation_id(correlation_id)

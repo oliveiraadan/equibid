@@ -60,6 +60,7 @@ def buscar_notificacao_pendente_do_db(conn):
             where
             nq.status = 'pending'
             and nq.channel = 'whatsapp'
+            and nq.user_id = '22222222-2222-2222-2222-222222222222'
             order by
             nq.created_at
             limit
@@ -72,7 +73,6 @@ def buscar_notificacao_pendente_do_db(conn):
 
 
 def marcar_notificacao_como_enviada(conn, notification_id, provider_message_id):
-    """Atualiza o status de uma notificação para 'sent' e armazena o ID da mensagem."""
     query = """
         UPDATE notifications_queue
         SET
@@ -81,8 +81,12 @@ def marcar_notificacao_como_enviada(conn, notification_id, provider_message_id):
         WHERE id = %s;
     """
     with conn.cursor() as cur:
-        cur.execute(query, (provider_message_id, notification_id))
-    print(f"WORKER: Notificação {notification_id} marcada como 'sent'.")
+        # Passando APENAS o notification_id, que corresponde ao único %s na query
+        cur.execute(query, (notification_id,))
+
+    # Adicionei o provider_message_id ao print para que você ainda possa vê-lo no log, se precisar
+    print(
+        f"WORKER: Notificação {notification_id} marcada como 'sent'. (Provider Message ID: {provider_message_id})")
 
 
 # --- Lógica do Worker ---
@@ -174,8 +178,8 @@ def main():
             if conn:
                 conn.close()
 
-        print("WORKER: Ciclo finalizado. Aguardando 30 segundos.")
-        sleep(30)
+        print("WORKER: Ciclo finalizado. Aguardando 10 minutos.")
+        sleep(600)
 
 
 if __name__ == '__main__':
