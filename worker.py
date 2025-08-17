@@ -7,7 +7,7 @@ from providers.telegram import TelegramProvider
 from providers.z_api import ZApiProvider
 
 # Carrega as variáveis de ambiente do arquivo .env
-load_dotenv()
+load_dotenv(encoding="utf-8")
 
 # --- Configuração dos Providers ---
 PROVIDERS = {}
