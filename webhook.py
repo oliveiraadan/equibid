@@ -6,6 +6,9 @@ import uvicorn
 import json
 from dotenv import load_dotenv
 from providers.telegram import TelegramProvider
+from providers.evolution_api import EvolutionAPIProvider
+from fastapi.responses import JSONResponse
+import logging
 
 # Carrega as variáveis de ambiente do .env
 load_dotenv()
@@ -109,8 +112,14 @@ app = FastAPI(title="EquiBid Webhook")
 try:
     telegram = TelegramProvider()
 except RuntimeError as e:
-    print(f"ERRO CRÍTICO: {e}")
+    print(f"ERRO CRÍTICO - Telegram: {e}")
     telegram = None
+
+try:
+    whatsapp = EvolutionAPIProvider()
+except RuntimeError as e:
+    print(f"ERRO CRÍTICO - WhatsApp: {e}")
+    whatsapp = None
 
 
 @app.post("/webhook")
@@ -191,6 +200,106 @@ async def processar_webhook(request: Request):
         # A exceção será capturada pelo FastAPI e retornará um erro 500.
 
     return {"status": "success", "message": "Ação processada."}
+
+
+def process_payload(payload):
+    # Exemplo de processamento: apenas logar o payload
+    print(f"Processando payload")
+    # Aqui você pode adicionar lógica para salvar em banco, chamar outro serviço, etc.
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+
+    data = (payload.get("data") or {})
+    key = (data.get("key") or {})
+
+    remote_jid = key.get("remoteJid")
+    participant = key.get("participant")
+    from_me = bool(key.get("fromMe", False))
+    push_name = data.get("pushName")
+
+    is_group = isinstance(remote_jid, str) and remote_jid.endswith("@g.us")
+
+    # Determina o remetente (JID)
+    if is_group and participant:
+        sender_id = participant
+    elif not from_me and isinstance(remote_jid, str):
+        sender_id = remote_jid
+    else:
+        sender_id = payload.get(
+            "sender") or participant or remote_jid or "desconhecido"
+
+    sender_name = push_name or sender_id
+
+    # Extrai o texto (considera diversos tipos de mensagem)
+    msg = (data.get("message") or {})
+    m = msg
+    # Desembrulha wrappers comuns
+    while True:
+        if isinstance(m.get("ephemeralMessage"), dict) and m["ephemeralMessage"].get("message"):
+            m = m["ephemeralMessage"]["message"]
+            continue
+        if isinstance(m.get("viewOnceMessage"), dict) and m["viewOnceMessage"].get("message"):
+            m = m["viewOnceMessage"]["message"]
+            continue
+        if isinstance(m.get("message"), dict):
+            m = m["message"]
+            continue
+        break
+
+    text = None
+    if isinstance(m.get("conversation"), str):
+        text = m["conversation"]
+    elif isinstance(m.get("extendedTextMessage"), dict):
+        text = m["extendedTextMessage"].get(
+            "text") or m["extendedTextMessage"].get("caption")
+    elif isinstance(m.get("imageMessage"), dict):
+        text = m["imageMessage"].get("caption")
+    elif isinstance(m.get("videoMessage"), dict):
+        text = m["videoMessage"].get("caption")
+    elif isinstance(m.get("documentMessage"), dict):
+        text = m["documentMessage"].get(
+            "caption") or m["documentMessage"].get("fileName")
+    elif isinstance(m.get("buttonsResponseMessage"), dict):
+        br = m["buttonsResponseMessage"]
+        text = br.get("selectedDisplayText") or br.get("selectedButtonId")
+    elif isinstance(m.get("listResponseMessage"), dict):
+        lr = m["listResponseMessage"]
+        ssr = lr.get("singleSelectReply") or {}
+        text = ssr.get("selectedRowId") or lr.get("title")
+
+    if not text:
+        for k in ("text", "caption", "contentText", "body"):
+            v = m.get(k)
+            if isinstance(v, str) and v.strip():
+                text = v
+                break
+
+    text = text or ""
+
+    whatsapp.send_text('119963478280', f"{sender_name} — {sender_id}: {text}")
+
+    # Formato final em uma única string
+    return True
+
+
+@app.post("/webhook-evolution")
+async def webhook(request: Request):
+    try:
+        payload = await request.json()
+        logging.info(f"📩 Payload recebido: {payload}")
+
+        print("\n--- ✅ WEBHOOK RECEBIDO ---")
+        print(json.dumps(payload, indent=2))
+
+        # Aqui você adiciona a lógica de processamento
+        # Exemplo: salvar em banco, chamar outro serviço, etc.
+        process_payload(payload)
+
+        return JSONResponse(content={"status": "success", "message": "Webhook recebido"}, status_code=200)
+
+    except Exception as e:
+        logging.error(f"❌ Erro ao processar webhook: {e}")
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=400)
 
 
 if __name__ == "__main__":
