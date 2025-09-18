@@ -1,7 +1,7 @@
-import os
+import os, re, uvicorn, json, asyncio
 import psycopg2
 import psycopg2.extras
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 import uvicorn
 import json
 from dotenv import load_dotenv
@@ -13,9 +13,50 @@ import logging
 # Carrega as variáveis de ambiente do .env
 load_dotenv()
 
-# --- Conexão com Banco de Dados ---
-# (Em uma aplicação real, considere usar um pool de conexões)
+YOUTUBE_CHAT_ID = os.getenv("YOUTUBE_CHAT_ID")
+if YOUTUBE_CHAT_ID:
+    YOUTUBE_CHAT_ID = int(YOUTUBE_CHAT_ID) # O ID vem como string, convertemos para inteiro
+    print(f"Funcionalidade de download de vídeos restrita ao chat ID: {YOUTUBE_CHAT_ID}")
+else:
+    print("AVISO: YOUTUBE_CHAT_ID não definido no .env. A funcionalidade de download está desativada.")
 
+async def run_download_and_notify(chat_id: int, url: str):
+    """
+    Esta função roda em segundo plano para não bloquear o webhook.
+    """
+    print(f"BACKGROUND: Iniciando processo de download para o chat {chat_id}")
+    
+    await telegram.send_message(chat_id=chat_id, text="🔍 Verificando o status do vídeo...")
+    
+    status = await asyncio.to_thread(downloader.get_stream_status, url)
+    
+    if status in ["LIVE", "FINISHED", "NOT_A_LIVE_STREAM"]:
+        mensagem_status = {
+            "LIVE": "🔴 Status: Live em andamento. Iniciando gravação...",
+            "FINISHED": "✅ Status: Live finalizada. Iniciando download...",
+            "NOT_A_LIVE_STREAM": "📹 Status: Vídeo comum. Iniciando download..."
+        }[status]
+        
+        await telegram.send_message(chat_id=chat_id, text=mensagem_status)
+        download_function = downloader.record_live_stream if status == "LIVE" else downloader.download_finished_stream
+        final_filepath = await asyncio.to_thread(download_function, url)
+
+        if final_filepath:
+            filename = os.path.basename(final_filepath)
+            await telegram.send_message(
+                chat_id=chat_id,
+                text=f"✅ Download concluído com sucesso!\n\nSalvo como: `{filename}`"
+            )
+        else:
+            await telegram.send_message(
+                chat_id=chat_id,
+                text="❌ Ocorreu um erro durante o download. Verifique os logs do servidor."
+            )
+    else:
+        await telegram.send_message(
+            chat_id=chat_id,
+            text="❌ Não foi possível verificar o status do link. A URL pode ser inválida."
+        )
 
 def get_db_connection():
     """Cria e retorna uma nova conexão com o banco de dados."""
@@ -26,7 +67,6 @@ def get_db_connection():
         print(
             f"ERRO CRÍTICO: Webhook não pôde conectar ao banco de dados: {e}")
         return None
-
 
 def buscar_dados_completos_por_correlation_id(correlation_id: str):
     """
@@ -70,9 +110,6 @@ def buscar_dados_completos_por_correlation_id(correlation_id: str):
     # Renomeia as chaves para corresponder ao formato esperado pela lógica de mensagem
     return {"found_lot": dict(data)}
 
-# Adicione esta nova função em webhook.py
-
-
 def registrar_resposta_do_usuario(correlation_id: str, acao: str):
     """
     Atualiza a tabela notifications_queue com a resposta do usuário.
@@ -106,7 +143,6 @@ def registrar_resposta_do_usuario(correlation_id: str, acao: str):
             conn.close()
 
 
-# --- Lógica do Webhook ---
 app = FastAPI(title="EquiBid Webhook")
 
 try:
@@ -122,8 +158,8 @@ except RuntimeError as e:
     whatsapp = None
 
 
-@app.post("/webhook")
-async def processar_webhook(request: Request):
+@app.post("/webhook-telegram")
+async def processar_webhook(request: Request, background_tasks: BackgroundTasks):
     """Endpoint para processar cliques nos botões do Telegram (callback_query)."""
     if not telegram:
         raise HTTPException(
@@ -133,73 +169,96 @@ async def processar_webhook(request: Request):
     print("\n--- ✅ WEBHOOK RECEBIDO ---")
     print(json.dumps(dados, indent=2))
 
-    if "callback_query" not in dados:
-        return {"status": "ok", "message": "Não é um callback de botão, ignorando."}
 
-    callback_data = dados["callback_query"]["data"]
-    chat_id = dados["callback_query"]["message"]["chat"]["id"]
+    if "message" in dados and "text" in dados["message"]:
+        message = dados["message"]
+        chat_id = message["chat"]["id"]
+        
+        # <<< PONTO CRÍTICO DE SEGURANÇA >>>
+        # Verifica se a mensagem veio do chat permitido E se a funcionalidade está ativa.
+        if YOUTUBE_CHAT_ID and chat_id == YOUTUBE_CHAT_ID:
+            text = message["text"]
+            youtube_regex = r"(https?://)?(www\.)?(youtube|youtu|youtube-nocookie)\.(com|be)/(watch\?v=|embed/|v/|.+\?v=)?([^&=%\?]{11})"
+            match = re.search(youtube_regex, text)
 
-    try:
-        acao, correlation_id = callback_data.split(":", 1)
-    except ValueError:
-        return {"status": "error", "message": "Formato de callback_data inválido."}
+            if match:
+                url_encontrada = match.group(0)
+                await telegram.send_message(
+                    chat_id=chat_id, 
+                    text="✅ Link do YouTube recebido! Processando em segundo plano. 🚀"
+                )
+                background_tasks.add_task(run_download_and_notify, chat_id, url_encontrada)
+            
+        return {"status": "ok", "message": "Mensagem recebida e processada."}
+        
+    # --- LÓGICA PARA CALLBACKS DE BOTÕES (EXISTENTE) ---
+    elif "callback_query" in dados:
 
-    registrar_resposta_do_usuario(correlation_id=correlation_id, acao=acao)
 
-    # Busca os dados completos DO LOTE usando o correlation_id
-    notificacao = buscar_dados_completos_por_correlation_id(correlation_id)
-    if not notificacao:
-        # TODO: Adicionar lógica para lidar com notificação não encontrada.
-        # Poderia ser uma mensagem de erro para o usuário.
-        print(
-            f"WEBHOOK: ERRO - Notificação com correlation_id {correlation_id} não encontrada.")
-        raise HTTPException(
-            status_code=404, detail="Notificação original não encontrada.")
+        callback_data = dados["callback_query"]["data"]
+        chat_id = dados["callback_query"]["message"]["chat"]["id"]
 
-    # LÓGICA DE RESPOSTA
-    try:
-        if acao == "show_details":
-            lote = notificacao["found_lot"]
-            # Formata a data de nascimento se ela existir
-            data_nasc_formatada = lote['lot_data_nascimento'].strftime(
-                '%d/%m/%Y') if lote.get('lot_data_nascimento') else 'N/A'
+        try:
+            acao, correlation_id = callback_data.split(":", 1)
+        except ValueError:
+            return {"status": "error", "message": "Formato de callback_data inválido."}
 
-            mensagem = (
-                f"🐴 *Detalhes do Lote: {lote['lot_nome']}*\n\n"
-                f"Leilão: *{lote['lot_leilao']}*\n"
-                f"Leiloeira: *{lote['lot_leiloeira']}*\n"
-                f"Nascimento: *{data_nasc_formatada}*\n"
-                f"Raça: *{lote['lot_raca']}*\n"
-                f"Pelagem: *{lote['lot_pelagem']}*\n"
-                f"Sexo: *{lote['lot_sexo']}*\n"
-                f"Pai: *{lote['lot_pai']}*\n"
-                f"Mãe: *{lote['lot_mae']}*"
-            )
-            botoes = [
-                {"text": "➡️ Abrir pagina do lote", "url": lote['lot_url']}]
-            telegram.send_message(
-                chat_id=chat_id, text=mensagem, buttons=botoes)
+        registrar_resposta_do_usuario(correlation_id=correlation_id, acao=acao)
 
-        elif acao == "no_thanks":
-            mensagem = "Entendido. Você gostaria de ajustar os critérios desta busca para receber notificações mais precisas no futuro?"
-            botoes = [
-                {"text": "🔧 Sim, revisar busca",
-                    "url": "https://equibid.com.br/minhas-buscas"},
-                {"text": "👍 Deixar para depois",
-                    "callback_data": f"close_convo:{correlation_id}"}
-            ]
-            telegram.send_message(
-                chat_id=chat_id, text=mensagem, buttons=botoes)
+        # Busca os dados completos DO LOTE usando o correlation_id
+        notificacao = buscar_dados_completos_por_correlation_id(correlation_id)
+        if not notificacao:
+            # TODO: Adicionar lógica para lidar com notificação não encontrada.
+            # Poderia ser uma mensagem de erro para o usuário.
+            print(
+                f"WEBHOOK: ERRO - Notificação com correlation_id {correlation_id} não encontrada.")
+            raise HTTPException(
+                status_code=404, detail="Notificação original não encontrada.")
 
-        elif acao == "close_convo":
-            mensagem = "Tudo bem! Continuaremos de olho para você. 😉"
-            telegram.send_message(chat_id=chat_id, text=mensagem)
+        # LÓGICA DE RESPOSTA
+        try:
+            if acao == "show_details":
+                lote = notificacao["found_lot"]
+                # Formata a data de nascimento se ela existir
+                data_nasc_formatada = lote['lot_data_nascimento'].strftime(
+                    '%d/%m/%Y') if lote.get('lot_data_nascimento') else 'N/A'
 
-    except RuntimeError as e:
-        print(f"WEBHOOK: Erro ao enviar mensagem de resposta: {e}")
-        # A exceção será capturada pelo FastAPI e retornará um erro 500.
+                mensagem = (
+                    f"🐴 *Detalhes do Lote: {lote['lot_nome']}*\n\n"
+                    f"Leilão: *{lote['lot_leilao']}*\n"
+                    f"Leiloeira: *{lote['lot_leiloeira']}*\n"
+                    f"Nascimento: *{data_nasc_formatada}*\n"
+                    f"Raça: *{lote['lot_raca']}*\n"
+                    f"Pelagem: *{lote['lot_pelagem']}*\n"
+                    f"Sexo: *{lote['lot_sexo']}*\n"
+                    f"Pai: *{lote['lot_pai']}*\n"
+                    f"Mãe: *{lote['lot_mae']}*"
+                )
+                botoes = [
+                    {"text": "➡️ Abrir pagina do lote", "url": lote['lot_url']}]
+                telegram.send_message(
+                    chat_id=chat_id, text=mensagem, buttons=botoes)
 
-    return {"status": "success", "message": "Ação processada."}
+            elif acao == "no_thanks":
+                mensagem = "Entendido. Você gostaria de ajustar os critérios desta busca para receber notificações mais precisas no futuro?"
+                botoes = [
+                    {"text": "🔧 Sim, revisar busca",
+                        "url": "https://equibid.com.br/minhas-buscas"},
+                    {"text": "👍 Deixar para depois",
+                        "callback_data": f"close_convo:{correlation_id}"}
+                ]
+                telegram.send_message(
+                    chat_id=chat_id, text=mensagem, buttons=botoes)
+
+            elif acao == "close_convo":
+                mensagem = "Tudo bem! Continuaremos de olho para você. 😉"
+                telegram.send_message(chat_id=chat_id, text=mensagem)
+
+        except RuntimeError as e:
+            print(f"WEBHOOK: Erro ao enviar mensagem de resposta: {e}")
+            # A exceção será capturada pelo FastAPI e retornará um erro 500.
+
+        return {"status": "success", "message": "Ação processada."}
 
 
 def process_payload(payload):
